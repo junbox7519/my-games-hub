@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>アイスクライム | My Games Hub</title>
+<link rel="stylesheet" href="../../css/style.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="game-page">
+
+<header class="site-header game-header">
+  <a class="back-link" href="../../index.html">&larr; トップへ戻る</a>
+  <h1>アイスクライム</h1>
+  <p class="tagline">氷のブロックを砕いて頂上を目指せ！</p>
+</header>
+
+<main class="game-main">
+  <div class="hud">
+    <div class="hud-item">SCORE<br><span id="score">0</span></div>
+    <div class="hud-item">LEVEL<br><span id="level">1</span></div>
+    <div class="hud-item">LIVES<br><span id="lives">♥♥♥</span></div>
+    <div class="hud-item time-item">TIME
+      <div class="time-bar"><div id="timeFill" class="time-fill"></div></div>
+    </div>
+  </div>
+
+  <div class="stage-wrap">
+    <canvas id="game"></canvas>
+    <div id="overlay" class="overlay">
+      <h2 id="overlayTitle">アイスクライム</h2>
+      <p id="overlayMsg">氷のブロックをハンマーで砕きながら一番上を目指そう。<br>敵に触れるとライフが減るが、ハンマーで気絶させれば倒せる。<br>時間切れになるとコンドルが襲ってくるので急ごう！</p>
+      <button id="startBtn">はじめる</button>
+    </div>
+  </div>
+
+  <div class="controls-help">
+    <p><strong>PC:</strong> ← → 移動 / ↑ または Space ジャンプ / Z または X ハンマー</p>
+  </div>
+
+  <div class="touch-controls" id="touchControls">
+    <div class="touch-side">
+      <button class="touch-btn" id="btnLeft" aria-label="left">◀</button>
+      <button class="touch-btn" id="btnRight" aria-label="right">▶</button>
+    </div>
+    <div class="touch-side">
+      <button class="touch-btn" id="btnHammer" aria-label="hammer">🔨</button>
+      <button class="touch-btn" id="btnJump" aria-label="jump">⤴</button>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>&copy; <span id="year"></span> My Games Hub</p>
+</footer>
+
+<script src="../../js/script.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
