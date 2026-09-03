@@ -153,10 +153,10 @@ function enemyMenu(f){
 
 function makeEnemy(type,x,y,f){
   const hpTable = {slime:1, knight:2, elf:2, mage:2, ghost:2};
-  const spdTable = {slime:0.3, knight:0.35, elf:0.325, mage:0.3, ghost:0.5};
+  const spdTable = {slime:0.18, knight:0.21, elf:0.195, mage:0.18, ghost:0.3};
   return {
     type, x, y, px:x*TILE, py:y*TILE, dir:'down',
-    speed: spdTable[type] + f*0.0125,
+    speed: spdTable[type] + f*0.0075,
     hp: hpTable[type] + Math.floor(f/3),
     stepCd:0,
     shootCd: 60 + (Math.random()*60|0),
@@ -169,7 +169,7 @@ function makeEnemy(type,x,y,f){
 function makeDragon(x,y,f){
   return {
     type:'dragon', x, y, px:x*TILE, py:y*TILE, dir:'left',
-    speed:0.325, hp:9 + (f-BOSS_FLOOR)*3, maxhp:9 + (f-BOSS_FLOOR)*3,
+    speed:0.195, hp:9 + (f-BOSS_FLOOR)*3, maxhp:9 + (f-BOSS_FLOOR)*3,
     stepCd:0, shootCd:100, ranged:true, alive:true, w:2, hitFlash:0
   };
 }
@@ -276,7 +276,7 @@ function spawnTraps(f, cells){
 function updateTraps(){
   for (const t of traps){
     if (t.type==='spike'){
-      const tx=t.x*TILE, ty=t.y*TILE, spd=1;
+      const tx=t.x*TILE, ty=t.y*TILE, spd=0.6;
       if (t.px<tx) t.px=Math.min(tx,t.px+spd);
       if (t.px>tx) t.px=Math.max(tx,t.px-spd);
       if (t.py<ty) t.py=Math.min(ty,t.py+spd);
@@ -330,7 +330,7 @@ function newGame(){ lives=3; score=0; clearTimer=0; runAtk=1; runLight=false; st
 
 // ==== プレイヤー更新 ============================================
 function updatePlayer(){
-  const tx=player.x*TILE, ty=player.y*TILE, spd=1.25;
+  const tx=player.x*TILE, ty=player.y*TILE, spd=0.75;
   if (player.px<tx) player.px=Math.min(tx,player.px+spd);
   if (player.px>tx) player.px=Math.max(tx,player.px-spd);
   if (player.py<ty) player.py=Math.min(ty,player.py+spd);
@@ -378,12 +378,12 @@ function atRest(o){ return o.px===o.x*TILE && o.py===o.y*TILE; }
 function spawnProjectile(fromPx, fromPy, targetPx, targetPy, kind){
   const dx=targetPx-fromPx, dy=targetPy-fromPy;
   const len=Math.hypot(dx,dy)||1;
-  const spd = kind==='arrow'?1.7:(kind==='fire'?1.8:1.1);
+  const spd = kind==='arrow'?1.02:(kind==='fire'?1.08:0.66);
   projectiles.push({
     px:fromPx, py:fromPy,
     vx:dx/len*spd, vy:dy/len*spd,
     kind, dmg: kind==='arrow'?15:(kind==='fire'?24:22),
-    life: kind==='fire'?480:360   // 炎は遠くまで飛ぶ
+    life: kind==='fire'?800:600   // 炎は遠くまで飛ぶ
   });
 }
 
