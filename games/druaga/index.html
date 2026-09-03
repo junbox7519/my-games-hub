@@ -153,10 +153,10 @@ function enemyMenu(f){
 
 function makeEnemy(type,x,y,f){
   const hpTable = {slime:1, knight:2, elf:2, mage:2, ghost:2};
-  const spdTable = {slime:0.6, knight:0.7, elf:0.65, mage:0.6, ghost:1.0};
+  const spdTable = {slime:0.3, knight:0.35, elf:0.325, mage:0.3, ghost:0.5};
   return {
     type, x, y, px:x*TILE, py:y*TILE, dir:'down',
-    speed: spdTable[type] + f*0.025,
+    speed: spdTable[type] + f*0.0125,
     hp: hpTable[type] + Math.floor(f/3),
     stepCd:0,
     shootCd: 60 + (Math.random()*60|0),
@@ -169,7 +169,7 @@ function makeEnemy(type,x,y,f){
 function makeDragon(x,y,f){
   return {
     type:'dragon', x, y, px:x*TILE, py:y*TILE, dir:'left',
-    speed:0.65, hp:9 + (f-BOSS_FLOOR)*3, maxhp:9 + (f-BOSS_FLOOR)*3,
+    speed:0.325, hp:9 + (f-BOSS_FLOOR)*3, maxhp:9 + (f-BOSS_FLOOR)*3,
     stepCd:0, shootCd:100, ranged:true, alive:true, w:2, hitFlash:0
   };
 }
@@ -330,7 +330,7 @@ function newGame(){ lives=3; score=0; clearTimer=0; runAtk=1; runLight=false; st
 
 // ==== プレイヤー更新 ============================================
 function updatePlayer(){
-  const tx=player.x*TILE, ty=player.y*TILE, spd=2.5;
+  const tx=player.x*TILE, ty=player.y*TILE, spd=1.25;
   if (player.px<tx) player.px=Math.min(tx,player.px+spd);
   if (player.px>tx) player.px=Math.max(tx,player.px-spd);
   if (player.py<ty) player.py=Math.min(ty,player.py+spd);
