@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ザ・タワー ～迷宮の塔～</title>
+<style>
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body {
+    height:100%;
+    background:#111;
+    color:#fff;
+    font-family: "Courier New", monospace;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    gap:12px;
+    -webkit-font-smoothing:none;
+    user-select:none;
+  }
+  h1 { font-size:18px; letter-spacing:2px; color:#ffd23f; text-shadow:2px 2px #a00; }
+  #wrap { position:relative; }
+  canvas {
+    background:#000;
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+    border:4px solid #555;
+    box-shadow:0 0 0 4px #222, 0 8px 30px rgba(0,0,0,.6);
+  }
+  #hint { font-size:12px; color:#8fb; opacity:.8; text-align:center; }
+  .keycap { display:inline-block; background:#333; border:1px solid #666; border-radius:3px; padding:1px 6px; margin:0 2px; }
+</style>
+</head>
+<body>
+  <h1>THE TOWER ～迷宮の塔～</h1>
+  <div id="wrap">
+    <canvas id="game" width="448" height="416"></canvas>
+  </div>
+  <div id="hint">
+    <span class="keycap">←↑↓→</span> 移動 ／
+    <span class="keycap">Space</span> 剣を出す ／
+    止まると盾（正面の飛び道具をガード） ／
+    <span class="keycap">Z</span>/<span class="keycap">Enter</span> 決定 ／
+    <span class="keycap">R</span> リスタート
+  </div>
+
+<script>
+(() => {
+"use strict";
+
+// ==== 基本設定 ==================================================
+const TILE = 32;
+const COLS = 14, ROWS = 13;
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const OFFY = 18; // HUD分の描画オフセット
+
+// NES風パレット
+const C = {
+  wall1:'#3b5dc9', wall2:'#2a3f8f', wallTop:'#6d8bff',
+  floor:'#101018', floorDot:'#1c1c2c',
+  gil:'#ffd23f', gilBody:'#2a6fdb', shield:'#e0e0e0',
+  key:'#ffe14d', door:'#c04a2b',
+  slime:'#41d16a', slimeDk:'#1e7a3a',
+  knight:'#d84a4a', knightDk:'#7a1e1e',
+  ghost:'#c9a0ff',
+  elf:'#3fae5a', elfDk:'#1e6a34',
+  mage:'#b060ff', mageDk:'#6a2ea0',
+  dragon:'#e04a2b', dragonDk:'#8a1e0e', dragonBelly:'#ffcf70',
+  arrow:'#c8a060', spell:'#e070ff', fire:'#ff7b25',
+  spike:'#c0c0d0', text:'#fff', hp:'#ff4d4d'
+};
+
+const MAX_FLOOR = 8;
+const BOSS_FLOOR = 6; // 5ステージクリア後(=6階)からドラゴン登場
+
+// ==== 入力 ======================================================
+const keys = {};
+const justPressed = {};
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
+  if (!keys[k]) justPressed[k] = true;
+  keys[k] = true;
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+function pressed(k){ return justPressed[k]; }
+
+const DIRV = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+
+// ==== 迷路生成 ==================================================
+function genMaze(floor){
+  const g = [];
+  for (let y=0;y<ROWS;y++){
+    const row=[];
+    for (let x=0;x<COLS;x++){
+      let wall = (x===0||y===0||x===COLS-1||y===ROWS-1) ? 1 : 0;
+      row.push(wall);
+    }
+    g.push(row);
+  }
+  let seed = floor*2654435761 % 2147483647;
+  const rnd = () => (seed = seed*16807 % 2147483647) / 2147483647;
+
+  for (let y=2;y<ROWS-1;y+=2){
+    for (let x=2;x<COLS-1;x+=2){
+      g[y][x]=1;
+      if (rnd()<0.5){
+        const dirs=[[0,-1],[0,1],[-1,0],[1,0]];
+        const d=dirs[(rnd()*4)|0];
+        const ny=y+d[1], nx=x+d[0];
+        if (ny>0&&ny<ROWS-1&&nx>0&&nx<COLS-1) g[ny][nx]=1;
+      }
+    }
+  }
+  g[ROWS-2][1]=0; g[ROWS-2][2]=0; g[ROWS-3][1]=0;
+  return g;
+}
+
+function freeCells(g){
+  const list=[];
+  for (let y=1;y<ROWS-1;y++)
+    for (let x=1;x<COLS-1;x++)
+      if (g[y][x]===0) list.push({x,y});
+  return list;
+}
+
+function isWall(x,y){
+  if (x<0||y<0||x>=COLS||y>=ROWS) return true;
+  return maze[y][x]===1;
+}
+function free2x2(x,y){ // 2x2が全部床か(ドラゴン用)
+  return !isWall(x,y)&&!isWall(x+1,y)&&!isWall(x,y+1)&&!isWall(x+1,y+1);
+}
+
+// ==== ゲーム状態 ================================================
+let state, floor, maze, player, enemies, projectiles, traps, chests;
+let key, door, keyGot, isBoss, boss, keyMsgShown;
+let msg, msgTimer, lives, score, invuln, clearTimer;
+let runAtk, runLight; // ゲーム中に持ち越す攻撃力・光の剣
+
+function enemiesCleared(){ return enemies.every(e => !e.alive); }
+
+// 敵の解禁スケジュール(クリアごとに種類が増える)
+function enemyMenu(f){
+  const menu = ['slime'];
+  if (f>=2) menu.push('knight');
+  if (f>=3) menu.push('elf');
+  if (f>=4) menu.push('mage');
+  if (f>=5) menu.push('ghost');
+  return menu;
+}
+
+function makeEnemy(type,x,y,f){
+  const hpTable = {slime:1, knight:2, elf:2, mage:2, ghost:2};
+  const spdTable = {slime:0.9, knight:1.1, elf:1.0, mage:0.9, ghost:1.6};
+  return {
+    type, x, y, px:x*TILE, py:y*TILE, dir:'down',
+    speed: spdTable[type] + f*0.04,
+    hp: hpTable[type] + Math.floor(f/3),
+    stepCd:0,
+    shootCd: 60 + (Math.random()*60|0),
+    ranged: (type==='elf'||type==='mage'),
+    hitFlash:0,
+    alive:true, w:1
+  };
+}
+
+function makeDragon(x,y,f){
+  return {
+    type:'dragon', x, y, px:x*TILE, py:y*TILE, dir:'left',
+    speed:1.0, hp:9 + (f-BOSS_FLOOR)*3, maxhp:9 + (f-BOSS_FLOOR)*3,
+    stepCd:0, shootCd:100, ranged:true, alive:true, w:2, hitFlash:0
+  };
+}
+
+function startFloor(f){
+  floor = f;
+  isBoss = (f >= BOSS_FLOOR);
+  maze = isBoss ? genRoom() : genMaze(f);
+  keyGot = false;
+  invuln = 0;
+  projectiles = [];
+  traps = [];
+  enemies = [];
+  chests = [];
+  boss = null;
+  keyMsgShown = false;
+
+  const startX = isBoss ? ((COLS/2)|0) : 1;
+  player = { x:startX, y:ROWS-2, px:startX*TILE, py:(ROWS-2)*TILE,
+             dir:'up', hp:100, maxhp:100,
+             attacking:false, guarding:true, blockFlash:0,
+             atk:runAtk, lightSword:runLight };
+
+  const cells = freeCells(maze).filter(c => !(c.x===startX && c.y>=ROWS-3));
+  const topCells = cells.filter(c=>c.y<=2).sort((a,b)=>a.x-b.x);
+  door = topCells.length ? topCells[(topCells.length/2)|0] : cells[0];
+
+  if (isBoss){
+    // 広い部屋でドラゴンと1対1(取り巻き・仕掛けなし)
+    const bx = ((COLS/2)|0)-1, by = 3;
+    boss = makeDragon(bx, by, f);
+    enemies.push(boss);
+    key = {x:-9,y:-9};
+  } else {
+    const midCells = cells.filter(c => c.y>3 && c.y<ROWS-3 && !(c.x===door.x&&c.y===door.y));
+    key = midCells[(midCells.length*0.5)|0] || cells[1];
+    const menu = enemyMenu(f);
+    const count = Math.min(2 + f, 8);
+    const sp = cells.filter(c =>
+      Math.abs(c.x-player.x)+Math.abs(c.y-player.y) > 4 &&
+      !(c.x===key.x&&c.y===key.y) && !(c.x===door.x&&c.y===door.y));
+    for (let i=0;i<count && sp.length;i++){
+      const c=sp.splice((Math.random()*sp.length)|0,1)[0];
+      enemies.push(makeEnemy(menu[(Math.random()*menu.length)|0], c.x, c.y, f));
+    }
+    spawnTraps(f, cells);
+  }
+
+  msg = isBoss ? "DRAGON'S LAIR" : "FLOOR "+f;
+  msgTimer = 100;
+}
+
+// ボス用の広間(外周だけ壁、内部は開けた部屋)
+function genRoom(){
+  const g=[];
+  for (let y=0;y<ROWS;y++){
+    const row=[];
+    for (let x=0;x<COLS;x++){
+      row.push((x===0||y===0||x===COLS-1||y===ROWS-1)?1:0);
+    }
+    g.push(row);
+  }
+  return g;
+}
+
+// ==== 仕掛け ====================================================
+function spawnTraps(f, cells){
+  // 動くトゲ壁: 2階から
+  const spikeCount = f>=2 ? Math.min(f-1, 3) : 0;
+  // 炎を出す壁: 3階から
+  const fireCount  = f>=3 ? Math.min(f-2, 3) : 0;
+
+  const avail = cells.filter(c =>
+    !(c.x<=2 && c.y>=ROWS-3) &&
+    !(c.x===door.x&&c.y===door.y) &&
+    !(c.x===key.x&&c.y===key.y));
+
+  for (let i=0;i<spikeCount && avail.length;i++){
+    const c=avail.splice((Math.random()*avail.length)|0,1)[0];
+    const axis = Math.random()<0.5?'x':'y';
+    traps.push({ type:'spike', x:c.x, y:c.y, px:c.x*TILE, py:c.y*TILE,
+                 axis, dir:1, moveCd:0 });
+  }
+  // 炎壁: 壁タイルに設置し、隣の床へ炎を噴く
+  let placed=0, tries=0;
+  while (placed<fireCount && tries<200){
+    tries++;
+    const wx = 1+((Math.random()*(COLS-2))|0);
+    const wy = 1+((Math.random()*(ROWS-2))|0);
+    if (!isWall(wx,wy)) continue;
+    // 床に面した向きを探す
+    const dirs = Object.keys(DIRV).filter(d=>{
+      const [dx,dy]=DIRV[d];
+      return !isWall(wx+dx,wy+dy);
+    });
+    if (!dirs.length) continue;
+    const d = dirs[(Math.random()*dirs.length)|0];
+    traps.push({ type:'firewall', x:wx, y:wy, dir:d,
+                 timer:(Math.random()*120)|0, active:false });
+    placed++;
+  }
+}
+
+function updateTraps(){
+  for (const t of traps){
+    if (t.type==='spike'){
+      const tx=t.x*TILE, ty=t.y*TILE, spd=2;
+      if (t.px<tx) t.px=Math.min(tx,t.px+spd);
+      if (t.px>tx) t.px=Math.max(tx,t.px-spd);
+      if (t.py<ty) t.py=Math.min(ty,t.py+spd);
+      if (t.py>ty) t.py=Math.max(ty,t.py-spd);
+      const arrived = t.px===tx && t.py===ty;
+      if (arrived){
+        t.moveCd--;
+        if (t.moveCd<=0){
+          t.moveCd=8;
+          const dx = t.axis==='x'?t.dir:0;
+          const dy = t.axis==='y'?t.dir:0;
+          if (isWall(t.x+dx, t.y+dy)){ t.dir=-t.dir; }
+          else { t.x+=dx; t.y+=dy; }
+        }
+      }
+      // 接触ダメージ
+      if (t.x===player.x && t.y===player.y) hurtPlayer(15);
+    }
+    else if (t.type==='firewall'){
+      t.timer++;
+      // 150フレーム周期: 40フレーム噴射
+      const phase = t.timer % 150;
+      t.active = phase < 40;
+      if (t.active){
+        const [dx,dy]=DIRV[t.dir];
+        for (let r=1;r<=2;r++){
+          const fx=t.x+dx*r, fy=t.y+dy*r;
+          if (isWall(fx,fy)) break;
+          if (player.x===fx && player.y===fy) hurtPlayer(12);
+        }
+      }
+    }
+  }
+}
+
+// ==== ダメージ ==================================================
+function hurtPlayer(dmg){
+  if (invuln>0) return;
+  player.hp-=dmg; invuln=50;
+  if (player.hp<=0){
+    lives--;
+    if (lives<=0){ state='dead'; }
+    else {
+      player.hp=player.maxhp; player.x=1; player.y=ROWS-2;
+      player.px=TILE; player.py=(ROWS-2)*TILE; invuln=90;
+    }
+  }
+}
+
+function newGame(){ lives=3; score=0; clearTimer=0; runAtk=1; runLight=false; startFloor(1); state='play'; }
+
+// ==== プレイヤー更新 ============================================
+function updatePlayer(){
+  const tx=player.x*TILE, ty=player.y*TILE, spd=4;
+  if (player.px<tx) player.px=Math.min(tx,player.px+spd);
+  if (player.px>tx) player.px=Math.max(tx,player.px-spd);
+  if (player.py<ty) player.py=Math.min(ty,player.py+spd);
+  if (player.py>ty) player.py=Math.max(ty,player.py-spd);
+  const midStep = player.px!==tx || player.py!==ty;
+
+  // 押しっぱなし(keys)に加え、1フレーム未満の短い入力(justPressed)も拾う
+  const held = d => keys['arrow'+d] || justPressed['arrow'+d];
+  let nd=null;
+  if (held('up')) nd='up';
+  else if (held('down')) nd='down';
+  else if (held('left')) nd='left';
+  else if (held('right')) nd='right';
+
+  // スペースキーを押している間だけ剣を出す / 押していなくて止まっていれば盾を構える
+  const attack = keys[' '] || justPressed[' '];
+  player.attacking = attack;
+  player.guarding  = !attack && !midStep && !nd;
+
+  if (midStep) return;
+  if (nd){
+    player.dir=nd;
+    const [dx,dy]=DIRV[nd];
+    if (!isWall(player.x+dx, player.y+dy)){ player.x+=dx; player.y+=dy; }
+  }
+
+  if (!isBoss && !keyGot && enemiesCleared() && player.x===key.x && player.y===key.y){
+    keyGot=true; score+=500; msg="GOT THE KEY!"; msgTimer=90;
+  }
+  if (player.x===door.x && player.y===door.y){
+    if (keyGot){
+      score+=1000;
+      if (floor>=MAX_FLOOR){ state='win'; return; }
+      state='clear'; msg="FLOOR CLEAR!"; msgTimer=120; clearTimer=0;
+    } else {
+      msg = isBoss ? "DEFEAT THE DRAGON!" : "NEED A KEY..."; msgTimer=60;
+    }
+  }
+}
+
+function swordCell(){ const [dx,dy]=DIRV[player.dir]; return {x:player.x+dx, y:player.y+dy}; }
+function atRest(o){ return o.px===o.x*TILE && o.py===o.y*TILE; }
+
+// ==== 飛び道具 ==================================================
+function spawnProjectile(fromPx, fromPy, targetPx, targetPy, kind){
+  const dx=targetPx-fromPx, dy=targetPy-fromPy;
+  const len=Math.hypot(dx,dy)||1;
+  const spd = kind==='arrow'?3.4:(kind==='fire'?3.6:2.2);
+  projectiles.push({
+    px:fromPx, py:fromPy,
+    vx:dx/len*spd, vy:dy/len*spd,
+    kind, dmg: kind==='arrow'?15:(kind==='fire'?24:22),
+    life: kind==='fire'?240:180   // 炎は遠くまで飛ぶ
+  });
+}
+
+function updateProjectiles(){
+  const pcx=player.px+16, pcy=player.py+16;
+  for (const p of projectiles){
+    p.px+=p.vx; p.py+=p.vy; p.life--;
+    const cx=p.px+16, cy=p.py+16;
+    const tx=(cx/TILE)|0, ty=(cy/TILE)|0;
+    if (isWall(tx,ty)){ p.life=0; continue; }
+    if (Math.hypot(cx-pcx, cy-pcy) < 13){
+      // 盾ガード: 止まって構えている間、正面から来た飛び道具を防ぐ
+      if (player.guarding){
+        const [fx,fy]=DIRV[player.dir];
+        if (p.vx*fx + p.vy*fy < 0){ // 正面(向いている方向)から接近
+          player.blockFlash=10; p.life=0; continue;
+        }
+      }
+      hurtPlayer(p.dmg); p.life=0; continue;
+    }
+  }
+  projectiles = projectiles.filter(p=>p.life>0);
+}
+
+// ==== 敵更新 ====================================================
+function updateEnemies(){
+  const pcx=player.px+16, pcy=player.py+16;
+  for (const e of enemies){
+    if (!e.alive) continue;
+    if (e.hitFlash>0) e.hitFlash--;
+
+    const tx=e.x*TILE, ty=e.y*TILE;
+    if (e.px<tx) e.px=Math.min(tx,e.px+e.speed);
+    if (e.px>tx) e.px=Math.max(tx,e.px-e.speed);
+    if (e.py<ty) e.py=Math.min(ty,e.py+e.speed);
+    if (e.py>ty) e.py=Math.max(ty,e.py-e.speed);
+
+    // 射撃(移動と独立にタイマー管理)
+    if (e.ranged){
+      e.shootCd--;
+      if (e.shootCd<=0){
+        if (e.type==='dragon'){
+          e.shootCd=85;
+          fireDragonBreath(e);
+        } else {
+          const dist=Math.abs(e.x-player.x)+Math.abs(e.y-player.y);
+          if (dist<=7){
+            e.shootCd = e.type==='elf'?90:120;
+            const ecx=e.px+16, ecy=e.py+16;
+            spawnProjectile(ecx,ecy,pcx,pcy, e.type==='elf'?'arrow':'spell');
+          } else {
+            e.shootCd = 30;
+          }
+        }
+      }
+    }
+
+    // 移動判定(中央到達後)
+    const arrived = e.px===tx && e.py===ty;
+    if (!arrived) continue;
+    e.stepCd--;
+    if (e.stepCd>0) continue;
+
+    if (e.type==='dragon'){
+      e.stepCd=10;
+      moveDragon(e);
+      continue;
+    }
+    e.stepCd = e.type==='ghost'?6:(e.type==='knight'?10:(e.ranged?13:14));
+
+    const dirs=Object.keys(DIRV).sort(()=>Math.random()-0.5);
+    dirs.sort((a,b)=>{
+      const [ax,ay]=DIRV[a], [bx,by]=DIRV[b];
+      const da=Math.abs(e.x+ax-player.x)+Math.abs(e.y+ay-player.y);
+      const db=Math.abs(e.x+bx-player.x)+Math.abs(e.y+by-player.y);
+      return da-db;
+    });
+    // 遠距離型は距離を取りたがる / 近接型は追う
+    const chase = e.ranged ? Math.random()<0.4 : Math.random()<0.65;
+    const order = chase ? dirs : dirs.slice().sort(()=>Math.random()-0.5);
+    for (const d of order){
+      const [dx,dy]=DIRV[d];
+      const nx=e.x+dx, ny=e.y+dy;
+      const ok = e.type==='ghost'
+        ? (nx>0&&ny>0&&nx<COLS-1&&ny<ROWS-1)
+        : !isWall(nx,ny);
+      if (ok){ e.x=nx; e.y=ny; e.dir=d; break; }
+    }
+  }
+  // 死体を除去
+  enemies = enemies.filter(e=>e.alive);
+}
+
+function moveDragon(e){
+  const dirs=Object.keys(DIRV);
+  dirs.sort((a,b)=>{
+    const [ax,ay]=DIRV[a], [bx,by]=DIRV[b];
+    const da=Math.abs(e.x+ax-player.x)+Math.abs(e.y+ay-player.y);
+    const db=Math.abs(e.x+bx-player.x)+Math.abs(e.y+by-player.y);
+    return da-db;
+  });
+  const order = Math.random()<0.7 ? dirs : dirs.slice().sort(()=>Math.random()-0.5);
+  for (const d of order){
+    const [dx,dy]=DIRV[d];
+    if (free2x2(e.x+dx, e.y+dy)){ e.x+=dx; e.y+=dy; e.dir=d; return; }
+  }
+}
+
+function fireDragonBreath(e){
+  const cx=e.px+32, cy=e.py+32; // 2x2の中心
+  const pcx=player.px+16, pcy=player.py+16;
+  const base=Math.atan2(pcy-cy, pcx-cx);
+  for (let a=-1;a<=1;a++){
+    const ang=base + a*0.35;
+    spawnProjectile(cx,cy, cx+Math.cos(ang)*40, cy+Math.sin(ang)*40, 'fire');
+  }
+}
+
+// ==== 戦闘(剣・接触) ============================================
+function aabb(a,b){
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+// 向いている方向へ広めに伸ばした剣の当たり判定(ピクセル単位)
+function swordHitbox(){
+  const px=player.px, py=player.py;
+  switch(player.dir){
+    case 'up':    return {x:px+2,  y:py-18, w:28, h:34};
+    case 'down':  return {x:px+2,  y:py+16, w:28, h:34};
+    case 'left':  return {x:px-18, y:py+2,  w:34, h:28};
+    default:      return {x:px+16, y:py+2,  w:34, h:28}; // right
+  }
+}
+
+function combat(){
+  const sh = player.attacking ? swordHitbox() : null;
+  // プレイヤーの体(接触判定用・少し内側)
+  const body = { x:player.px+6, y:player.py+6, w:20, h:20 };
+  for (const e of enemies){
+    if (!e.alive) continue;
+    const sz = e.w===2 ? 64 : 32;
+    const er = { x:e.px, y:e.py, w:sz, h:sz };
+    // 剣ヒット
+    if (sh && aabb(sh, er)){
+      if (e.hitFlash<=0){
+        e.hp -= player.atk; e.hitFlash = e.type==='dragon'?10:8; // 連打制限
+        if (e.hp<=0){
+          e.alive=false;
+          const pts = {slime:100,knight:200,elf:250,mage:300,ghost:300,dragon:3000}[e.type];
+          score+=pts;
+          // ランダムで宝箱ドロップ(閉じた状態で出現)
+          if (Math.random() < 0.22){
+            chests.push({ x:e.x, y:e.y, item: Math.random()<0.5?'potion':'sword', open:false, timer:0 });
+          }
+          if (e.type==='dragon'){
+            keyGot=true; msg="THE DRAGON FALLS! DOOR OPENS!"; msgTimer=140;
+          } else { msg="+"+pts; msgTimer=35; }
+        }
+      }
+    }
+    // 接触ダメージ(体が重なったとき)
+    if (aabb(body, er)){
+      const dmg = {slime:12,knight:20,elf:14,mage:16,ghost:16,dragon:18}[e.type];
+      hurtPlayer(dmg);
+    }
+  }
+  // 宝箱に剣を突き刺すと開く
+  if (sh){
+    for (const c of chests){
+      if (!c.open){
+        const cr = { x:c.x*TILE, y:c.y*TILE, w:TILE, h:TILE };
+        if (aabb(sh, cr)) openChest(c);
+      }
+    }
+  }
+}
+
+function openChest(c){
+  c.open=true; c.timer=110; // 中身を見せる時間
+  score+=200;
+  if (c.item==='potion'){
+    player.hp=Math.min(player.maxhp, player.hp+40);
+    msg="POTION! HP+40";
+  } else { // 光の剣: 攻撃力+0.2
+    runAtk=Math.round((runAtk+0.2)*10)/10; runLight=true;
+    player.atk=runAtk; player.lightSword=true;
+    msg="SWORD OF LIGHT! ATK x"+runAtk.toFixed(1);
+  }
+  msgTimer=90;
+}
+
+function updateChests(){
+  for (let i=chests.length-1;i>=0;i--){
+    const c=chests[i];
+    if (c.open){ c.timer--; if (c.timer<=0) chests.splice(i,1); }
+  }
+}
+
+// ==== 描画: マップ ==============================================
+function drawWall(x,y){
+  const px=x*TILE, py=y*TILE;
+  ctx.fillStyle=C.wall2; ctx.fillRect(px,py,TILE,TILE);
+  ctx.fillStyle=C.wall1; ctx.fillRect(px+2,py+2,TILE-4,TILE-4);
+  ctx.fillStyle=C.wallTop; ctx.fillRect(px+2,py+2,TILE-4,4);
+  ctx.fillStyle=C.wall2;
+  ctx.fillRect(px+TILE/2-1,py+2,2,TILE-4);
+  ctx.fillRect(px+2,py+TILE/2-1,TILE-4,2);
+}
+function drawFloorTile(x,y){
+  const px=x*TILE, py=y*TILE;
+  ctx.fillStyle=C.floor; ctx.fillRect(px,py,TILE,TILE);
+  ctx.fillStyle=C.floorDot;
+  ctx.fillRect(px+4,py+4,2,2);
+  ctx.fillRect(px+TILE-8,py+TILE-8,2,2);
+}
+function drawKey(){
+  if (isBoss || keyGot || !enemiesCleared()) return;
+  const px=key.x*TILE, py=key.y*TILE, b=Math.sin(Date.now()/200)*2;
+  ctx.fillStyle=C.key;
+  ctx.fillRect(px+10,py+6+b,12,6);
+  ctx.fillRect(px+12,py+8+b,8,2);
+  ctx.fillRect(px+14,py+12+b,4,12);
+  ctx.fillRect(px+18,py+20+b,4,3);
+  ctx.fillRect(px+18,py+16+b,3,3);
+}
+function drawChest(c){
+  const px=c.x*TILE, py=c.y*TILE;
+  if (!c.open){
+    // ---- 閉じた宝箱 ----
+    const b=Math.round(Math.sin(Date.now()/250+c.x));
+    ctx.fillStyle='#6a3f16'; ctx.fillRect(px+5,py+14+b,22,13);
+    ctx.fillStyle='#a5702a'; ctx.fillRect(px+6,py+15+b,20,11);
+    ctx.fillStyle='#7a4a1a'; ctx.fillRect(px+5,py+7+b,22,8);
+    ctx.fillStyle='#b07a30'; ctx.fillRect(px+6,py+8+b,20,6);
+    ctx.fillStyle='#ffd23f';
+    ctx.fillRect(px+5,py+13+b,22,3);
+    ctx.fillRect(px+14,py+11+b,4,9);
+    ctx.fillStyle='#000'; ctx.fillRect(px+15,py+15+b,2,3);
+    if ((Date.now()/300|0)%2===0){
+      ctx.fillStyle='#fff';
+      ctx.fillRect(px+8,py+4+b,2,2); ctx.fillRect(px+24,py+6+b,2,2);
+    }
+  } else {
+    // ---- 開いた宝箱(中身を表示) ----
+    // 箱本体
+    ctx.fillStyle='#6a3f16'; ctx.fillRect(px+5,py+16,22,11);
+    ctx.fillStyle='#a5702a'; ctx.fillRect(px+6,py+17,20,9);
+    ctx.fillStyle='#3a2410'; ctx.fillRect(px+8,py+17,16,4); // 内側の影
+    // 開いたフタ
+    ctx.fillStyle='#b07a30'; ctx.fillRect(px+5,py+3,22,5);
+    ctx.fillStyle='#ffd23f'; ctx.fillRect(px+5,py+7,22,2);
+    // 浮き上がるアイテム
+    const rise = Math.min(10, (110-c.timer)>>2);
+    const iy = py+2 - rise;
+    if (c.item==='potion'){
+      ctx.fillStyle='#8a5a2a'; ctx.fillRect(px+14,iy+4,4,2);   // コルク
+      ctx.fillStyle='#d0d0d0'; ctx.fillRect(px+14,iy+6,4,3);   // 首
+      ctx.fillStyle='#ff4d6a'; ctx.fillRect(px+11,iy+9,10,9);  // 薬(赤)
+      ctx.fillStyle='#ff9db0'; ctx.fillRect(px+13,iy+11,3,3);  // ハイライト
+    } else {
+      ctx.fillStyle='#fff6b0'; ctx.fillRect(px+14,iy+2,4,13);  // 刃(光)
+      ctx.fillStyle='#fff'; ctx.fillRect(px+15,iy+3,2,5);
+      ctx.fillStyle='#f2b000'; ctx.fillRect(px+10,iy+15,12,3); // 鍔
+      ctx.fillStyle='#8a5a2a'; ctx.fillRect(px+15,iy+18,2,4);  // 柄
+    }
+    // きらめき
+    ctx.fillStyle='#fff';
+    ctx.fillRect(px+7,iy+2,2,2); ctx.fillRect(px+23,iy+5,2,2);
+  }
+}
+function drawDoor(){
+  const px=door.x*TILE, py=door.y*TILE;
+  ctx.fillStyle = keyGot ? '#e0a030' : C.door;
+  ctx.fillRect(px+3,py+2,TILE-6,TILE-4);
+  ctx.fillStyle='#000'; ctx.fillRect(px+6,py+6,TILE-12,TILE-8);
+  ctx.fillStyle = keyGot ? '#ffe14d':'#7a2a18';
+  ctx.fillRect(px+TILE/2-2,py+2,4,TILE-4);
+  ctx.fillStyle = keyGot ? '#e0a030' : C.door;
+  ctx.fillRect(px+6,py+2,TILE-12,3);
+}
+
+// ==== 描画: 仕掛け ==============================================
+function drawTrap(t){
+  if (t.type==='spike'){
+    const px=t.px, py=t.py;
+    ctx.fillStyle='#555'; ctx.fillRect(px+3,py+3,TILE-6,TILE-6);
+    ctx.fillStyle=C.spike;
+    for (let i=0;i<4;i++){
+      const sx=px+5+i*7;
+      ctx.beginPath();
+      ctx.moveTo(sx,py+6); ctx.lineTo(sx+3,py+2); ctx.lineTo(sx+6,py+6);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(sx,py+TILE-6); ctx.lineTo(sx+3,py+TILE-2); ctx.lineTo(sx+6,py+TILE-6);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle='#8a1e1e'; ctx.fillRect(px+3,py+TILE/2-2,TILE-6,4);
+  }
+  else if (t.type==='firewall'){
+    const px=t.x*TILE, py=t.y*TILE;
+    // 火口(壁に埋まった噴出口)
+    ctx.fillStyle='#5a1e0e'; ctx.fillRect(px+8,py+8,TILE-16,TILE-16);
+    ctx.fillStyle='#ff9040'; ctx.fillRect(px+12,py+12,TILE-24,TILE-24);
+    if (t.active){
+      const [dx,dy]=DIRV[t.dir];
+      for (let r=1;r<=2;r++){
+        const fx=t.x+dx*r, fy=t.y+dy*r;
+        if (isWall(fx,fy)) break;
+        drawFlame(fx*TILE, fy*TILE);
+      }
+    }
+  }
+}
+function drawFlame(px,py){
+  const f=(Date.now()/60|0)%2;
+  ctx.fillStyle=C.fire; ctx.fillRect(px+6,py+6,TILE-12,TILE-12);
+  ctx.fillStyle='#ffd23f'; ctx.fillRect(px+10+f,py+10,TILE-20,TILE-20);
+  ctx.fillStyle='#fff2a0'; ctx.fillRect(px+13,py+13+f,6,6);
+}
+
+// ==== 描画: キャラ ==============================================
+function drawGil(){
+  const px=player.px, py=player.py;
+  if (invuln>0 && (invuln>>2)%2===0) return;
+  ctx.fillStyle=C.gilBody; ctx.fillRect(px+9,py+12,14,16);
+  ctx.fillStyle=C.gil; ctx.fillRect(px+10,py+4,12,10);
+  ctx.fillStyle='#f2b000'; ctx.fillRect(px+10,py+4,12,3);
+  ctx.fillStyle='#f6d0a0'; ctx.fillRect(px+12,py+10,8,4);
+  const cxp=px+16, cyp=py+16;
+
+  if (player.attacking){
+    // 剣を向いた方向へ突き出す(刃＋金の鍔)
+    ctx.fillStyle=C.shield; ctx.fillRect(px+8,py+18,4,8); // 腰の盾
+    const blade = player.lightSword ? '#fff6b0' : '#dcdcff', hilt='#f2b000';
+    if (player.dir==='up'){    ctx.fillStyle=blade; ctx.fillRect(cxp-3, py-14, 6, 26); ctx.fillStyle=hilt; ctx.fillRect(cxp-6, py+8, 12, 4); }
+    if (player.dir==='down'){  ctx.fillStyle=blade; ctx.fillRect(cxp-3, py+20, 6, 26); ctx.fillStyle=hilt; ctx.fillRect(cxp-6, py+20, 12, 4); }
+    if (player.dir==='left'){  ctx.fillStyle=blade; ctx.fillRect(px-14, cyp-3, 26, 6); ctx.fillStyle=hilt; ctx.fillRect(px+8, cyp-6, 4, 12); }
+    if (player.dir==='right'){ ctx.fillStyle=blade; ctx.fillRect(px+20, cyp-3, 26, 6); ctx.fillStyle=hilt; ctx.fillRect(px+20, cyp-6, 4, 12); }
+  } else if (player.guarding){
+    // 盾を正面に構える
+    ctx.fillStyle=C.shield;
+    let sx,sy,sw,sh;
+    if (player.dir==='up')    { sx=px+6;  sy=py-2;  sw=20; sh=8; }
+    if (player.dir==='down')  { sx=px+6;  sy=py+26; sw=20; sh=8; }
+    if (player.dir==='left')  { sx=px-2;  sy=py+8;  sw=8;  sh=20; }
+    if (player.dir==='right') { sx=px+26; sy=py+8;  sw=8;  sh=20; }
+    ctx.fillStyle='#9aa4c0'; ctx.fillRect(sx,sy,sw,sh);       // 縁
+    ctx.fillStyle=C.shield;  ctx.fillRect(sx+1,sy+1,sw-2,sh-2);
+    ctx.fillStyle='#ffd23f';                                  // 紋章
+    ctx.fillRect(sx+(sw>>1)-2, sy+(sh>>1)-2, 4, 4);
+  }
+
+  // ガード成功のきらめき
+  if (player.blockFlash>0){
+    const [fx,fy]=DIRV[player.dir];
+    const bx=cxp+fx*18, by2=cyp+fy*18;
+    ctx.fillStyle = (player.blockFlash>>1)%2 ? '#fff' : '#9fe8ff';
+    ctx.fillRect(bx-2,by2-6,4,12); ctx.fillRect(bx-6,by2-2,12,4);
+  }
+}
+
+// ==== 敵スプライト(ドット絵) ====================================
+function drawSpriteMap(map, pal, ox, oy, ps){
+  for (let r=0;r<map.length;r++){
+    const row=map[r];
+    for (let c=0;c<row.length;c++){
+      const col=pal[row[c]];
+      if (col){ ctx.fillStyle=col; ctx.fillRect(ox+c*ps, oy+r*ps, ps, ps); }
+    }
+  }
+}
+const SPR_SLIME = [
+"................",
+"......KKKK......",
+"....KKllllKK....",
+"...KllllllllK...",
+"..KllllllllllK..",
+"..KgllllllllgK..",
+".KGGGGGGGGGGGGK.",
+".KGGKKGGGGKKGGK.",
+".KGGKKGGGGKKGGK.",
+".KGGGGGGGGGGGGK.",
+".KGGGGGGGGGGGGK.",
+".KgGGGGGGGGGGgK.",
+"..KgGGGGGGGGgK..",
+"...KKKKKKKKKK...",
+"....KKKKKKKK....",
+"................"
+];
+const PAL_SLIME = { K:'#20301a', l:'#cfe8a8', G:'#7cbf4c', g:'#5a9636' };
+const SPR_MAGE = [
+".........KKK....",
+"........KPPK....",
+".......KPPPK....",
+"...S...KPPPPK...",
+"..SYS..KPPPPPK..",
+"...S...KPPPPPK..",
+"...S..KYYYYYYYK.",
+"...S..KPPPPPPPK.",
+"...S..KFFFFFFFK.",
+"...S..KFKFFKFFK.",
+"...S..KFFFFFFFK.",
+"...S.KPPPPPPPPK.",
+"....KPPPpPPPPK..",
+"...KPPPPPPPPPPK.",
+"...KKPPPPPPPPKK.",
+".....KKKKKKKK..."
+];
+const PAL_MAGE = { K:'#1a1226', P:'#6a3fc0', p:'#4f2ea0', Y:'#f5c518', F:'#f2e2b0', S:'#7a5a3a' };
+const SPR_ELF = [
+"..........KK....",
+".........KGGK...",
+"........KGGGK...",
+".......KGGGGK...",
+"......KGGGGGGK..",
+".....KHHHHHHHHK.",
+"..K..KHFFFFFFHK.",
+".KBK.KFFKFFKFFK.",
+".KBK.KFFFFFFFFK.",
+"..KB.KGGGGGGGGK.",
+"...B.KGBBYYBBGK.",
+".....KGGGGGGGGK.",
+".....KGGgggGGGK.",
+"....KGGGGGGGGK..",
+".....KBBKKBBK...",
+"................"
+];
+const PAL_ELF = { K:'#14210e', G:'#4a8f3c', g:'#356b2a', H:'#6b4a2a', F:'#f2d2a0', B:'#5a3a1a', Y:'#f5c518' };
+
+function drawEnemy(e){
+  if (!e.alive) return;
+  const px=e.px, py=e.py;
+  const wob=Math.sin(Date.now()/150+e.x+e.y)*2;
+  const flash = e.hitFlash>0 && (e.hitFlash>>1)%2===0;
+
+  if (e.type==='dragon'){ drawDragon(e, flash); return; }
+  if (flash) ctx.globalAlpha=0.4;
+
+  if (e.type==='slime'){
+    drawSpriteMap(SPR_SLIME, PAL_SLIME, px, py+Math.round(wob), 2);
+  } else if (e.type==='knight'){
+    ctx.fillStyle=C.knightDk; ctx.fillRect(px+7,py+18,18,10);
+    ctx.fillStyle=C.knight; ctx.fillRect(px+8,py+8,16,18);
+    ctx.fillStyle='#000'; ctx.fillRect(px+10,py+12,12,3);
+    ctx.fillStyle='#ffd23f';
+    ctx.fillRect(px+6,py+6,3,5); ctx.fillRect(px+23,py+6,3,5);
+  } else if (e.type==='elf'){
+    drawSpriteMap(SPR_ELF, PAL_ELF, px, py, 2);
+  } else if (e.type==='mage'){
+    drawSpriteMap(SPR_MAGE, PAL_MAGE, px, py, 2);
+    // 杖の先の光(点滅)
+    const gl=Math.abs(Math.sin(Date.now()/200));
+    ctx.fillStyle=`rgba(245,197,24,${0.4+gl*0.6})`;
+    ctx.fillRect(px+3,py+7,5,5);
+  } else if (e.type==='ghost'){
+    ctx.globalAlpha = flash?0.4:0.85;
+    ctx.fillStyle=C.ghost;
+    ctx.fillRect(px+8,py+8+wob,16,16);
+    ctx.fillRect(px+8,py+22+wob,4,4); ctx.fillRect(px+16,py+22+wob,4,4);
+    ctx.fillStyle='#000';
+    ctx.fillRect(px+11,py+13+wob,3,4); ctx.fillRect(px+18,py+13+wob,3,4);
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawDragon(e, flash){
+  const px=e.px, py=e.py;
+  if (flash) ctx.globalAlpha=0.5;
+  const wob=Math.round(Math.sin(Date.now()/220)*2);
+  const ps=2, ox=px, oy=py+14+wob; // 32x16グリッドを縦中央寄せ
+  const pr=(gx,gy,gw,gh,col)=>{ ctx.fillStyle=col; ctx.fillRect(ox+gx*ps, oy+gy*ps, gw*ps, gh*ps); };
+  const B='#5a3a2a', W='#77c069', w='#a7dd97', G='#3aa33f', g='#2b8030',
+        Y='#f5d020', O='#ef9a2e', o='#f8c661', K='#20140e';
+
+  // ---- 翼(左右対称に大きく広げる) ----
+  const spans=[[1,1,4],[2,1,7],[3,1,9],[4,2,11],[5,4,11],[6,6,11],[7,8,11]];
+  for (const [ry,x0,x1] of spans){
+    pr(x0, ry, x1-x0+1, 1, W);        // 左翼 膜
+    pr(31-x1, ry, x1-x0+1, 1, W);     // 右翼 膜(ミラー)
+  }
+  pr(2,3,4,1,w); pr(26,3,4,1,w);       // 膜のハイライト
+  for (const [ry,x0,x1] of spans){     // 翼の骨(前縁)
+    pr(x0,ry,1,1,B); pr(31-x1,ry,1,1,B);
+  }
+  pr(1,1,4,1,B); pr(27,1,4,1,B);       // 上の骨
+
+  // ---- 腕・爪 ----
+  pr(9,10,2,4,G); pr(21,10,2,4,G);
+  pr(9,14,2,1,o); pr(21,14,2,1,o);
+
+  // ---- 胴体 ----
+  pr(11,9,10,5,G);
+  pr(11,9,10,1,g);
+  pr(11,9,2,5,g); pr(19,9,2,5,g);      // 体の側面の陰
+
+  // ---- 腹(オレンジの縞) ----
+  pr(13,10,6,4,O);
+  pr(13,11,6,1,o); pr(13,13,6,1,o);
+
+  // ---- 頭 ----
+  pr(12,2,8,7,G);
+  pr(12,2,8,1,g);
+  pr(13,7,6,2,g);                       // アゴの陰
+  pr(14,8,4,1,K);                       // 口
+  // 角
+  pr(13,0,2,2,Y); pr(17,0,2,2,Y);
+  // 目
+  pr(13,4,2,2,Y); pr(17,4,2,2,Y);
+  pr(14,5,1,1,K); pr(18,5,1,1,K);       // 瞳
+
+  ctx.globalAlpha=1;
+}
+
+function drawProjectiles(){
+  for (const p of projectiles){
+    const cx=p.px+16, cy=p.py+16;
+    if (p.kind==='arrow'){
+      ctx.strokeStyle=C.arrow; ctx.lineWidth=3;
+      ctx.beginPath();
+      ctx.moveTo(cx-p.vx*3, cy-p.vy*3);
+      ctx.lineTo(cx+p.vx*2, cy+p.vy*2);
+      ctx.stroke();
+      ctx.fillStyle='#fff'; ctx.fillRect(cx-1,cy-1,3,3);
+    } else if (p.kind==='spell'){
+      const g=(Date.now()/80|0)%2;
+      ctx.fillStyle=C.spell; ctx.fillRect(cx-6,cy-6,12,12);
+      ctx.fillStyle='#ffb0ff'; ctx.fillRect(cx-3-g,cy-3,6,6);
+      ctx.fillStyle='#fff'; ctx.fillRect(cx-1,cy-1,2,2);
+    } else if (p.kind==='fire'){
+      ctx.fillStyle=C.fire; ctx.fillRect(cx-7,cy-7,14,14);
+      ctx.fillStyle='#ffd23f'; ctx.fillRect(cx-4,cy-4,8,8);
+      ctx.fillStyle='#fff2a0'; ctx.fillRect(cx-2,cy-2,4,4);
+    }
+  }
+}
+
+// ==== HUD / メッセージ ==========================================
+function drawHUD(){
+  ctx.fillStyle=C.text; ctx.font='12px "Courier New"'; ctx.textBaseline='top'; ctx.textAlign='left';
+  ctx.fillText('FLOOR '+floor+'/'+MAX_FLOOR, 6, 4);
+  ctx.fillText('SCORE '+String(score).padStart(6,'0'), 150, 4);
+  for (let i=0;i<lives;i++){
+    ctx.fillStyle=C.gil; ctx.fillRect(cv.width-20-i*16, 4, 10, 10);
+  }
+  if (player.lightSword){
+    ctx.fillStyle='#fff2a0'; ctx.fillText('ATKx'+player.atk.toFixed(1), 300, 4);
+  }
+  ctx.fillStyle='#333'; ctx.fillRect(6, cv.height-14, 120, 8);
+  ctx.fillStyle=C.hp; ctx.fillRect(6, cv.height-14, 120*Math.max(0,player.hp)/player.maxhp, 8);
+  ctx.fillStyle=C.text; ctx.fillText('HP', 130, cv.height-15);
+  if (keyGot && !isBoss){
+    ctx.fillStyle=C.key; ctx.fillRect(200, cv.height-14, 8, 8);
+    ctx.fillText('KEY', 212, cv.height-15);
+  }
+  // ボスHP
+  if (isBoss && boss && boss.alive){
+    ctx.fillStyle=C.text; ctx.fillText('DRAGON', 250, cv.height-15);
+    ctx.fillStyle='#333'; ctx.fillRect(310, cv.height-14, 130, 8);
+    ctx.fillStyle='#ff7b25';
+    ctx.fillRect(310, cv.height-14, 130*Math.max(0,boss.hp)/boss.maxhp, 8);
+  }
+}
+function drawMessage(){
+  if (msgTimer>0 && msg){
+    ctx.font='16px "Courier New"'; ctx.textAlign='center';
+    const w=ctx.measureText(msg).width+20;
+    ctx.fillStyle='rgba(0,0,0,0.75)';
+    ctx.fillRect(cv.width/2-w/2, cv.height/2-16, w, 26);
+    ctx.fillStyle='#ffd23f';
+    ctx.fillText(msg, cv.width/2, cv.height/2-12);
+    ctx.textAlign='left'; ctx.font='12px "Courier New"';
+  }
+}
+
+function render(){
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.save(); ctx.translate(0, OFFY);
+  for (let y=0;y<ROWS;y++)
+    for (let x=0;x<COLS;x++){
+      if (maze[y][x]===1) drawWall(x,y); else drawFloorTile(x,y);
+    }
+  drawDoor(); drawKey();
+  for (const c of chests) drawChest(c);
+  for (const t of traps) drawTrap(t);
+  for (const e of enemies) drawEnemy(e);
+  drawProjectiles();
+  drawGil();
+  ctx.restore();
+  drawHUD();
+  drawMessage();
+}
+
+// ==== タイトル / 結果画面 =======================================
+function drawTitle(){
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.textAlign='center';
+  ctx.fillStyle='#ffd23f'; ctx.font='26px "Courier New"';
+  ctx.fillText('THE TOWER', cv.width/2, 70);
+  ctx.font='14px "Courier New"'; ctx.fillStyle='#8fb';
+  ctx.fillText('～ 迷宮の塔 ～', cv.width/2, 100);
+  ctx.fillStyle='#fff'; ctx.font='12px "Courier New"';
+  ctx.fillText('鍵を取り、ドアをくぐって塔を登れ', cv.width/2, 160);
+  ctx.fillText('スペースキーで剣を出し敵を突け', cv.width/2, 180);
+  ctx.fillText('止まると盾 正面の魔法・矢を防ぐ', cv.width/2, 200);
+  ctx.fillText('5階を越えると広間でドラゴンと対決', cv.width/2, 220);
+  if ((Date.now()/500|0)%2===0){
+    ctx.fillStyle='#ffd23f'; ctx.font='16px "Courier New"';
+    ctx.fillText('PRESS  Z  or  ENTER', cv.width/2, 300);
+  }
+  ctx.fillStyle=C.gilBody; ctx.fillRect(cv.width/2-8,118,16,18);
+  ctx.fillStyle=C.gil; ctx.fillRect(cv.width/2-7,110,14,10);
+  ctx.textAlign='left';
+}
+function drawEnd(title, sub, color){
+  ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.textAlign='center';
+  ctx.fillStyle=color; ctx.font='30px "Courier New"';
+  ctx.fillText(title, cv.width/2, 140);
+  ctx.fillStyle='#fff'; ctx.font='16px "Courier New"';
+  ctx.fillText(sub, cv.width/2, 190);
+  ctx.fillText('SCORE  '+String(score).padStart(6,'0'), cv.width/2, 230);
+  if ((Date.now()/500|0)%2===0){
+    ctx.font='14px "Courier New"'; ctx.fillStyle='#ffd23f';
+    ctx.fillText('PRESS  R  TO  RESTART', cv.width/2, 300);
+  }
+  ctx.textAlign='left';
+}
+
+// ==== メインループ ==============================================
+function loop(){
+  if (state==='title'){
+    drawTitle();
+    if (pressed('z')||pressed('enter')||pressed(' ')) newGame();
+  }
+  else if (state==='play'){
+    if (invuln>0) invuln--;
+    if (player.blockFlash>0) player.blockFlash--;
+    updatePlayer();
+    if (state==='play'){
+      updateEnemies();
+      updateProjectiles();
+      updateTraps();
+      combat();
+      updateChests();
+      if (!isBoss && !keyGot && !keyMsgShown && enemiesCleared()){
+        keyMsgShown=true; msg="ALL CLEAR! KEY APPEARED"; msgTimer=90;
+      }
+      if (msgTimer>0) msgTimer--;
+      render();
+    }
+    if (pressed('r')) newGame();
+  }
+  else if (state==='clear'){
+    render(); drawMessage();
+    clearTimer++;
+    if (clearTimer>90){ startFloor(floor+1); state='play'; }
+  }
+  else if (state==='dead'){
+    render(); drawEnd('GAME OVER', 'ちからつきた…', '#ff4d4d');
+    if (pressed('r')) state='title';
+  }
+  else if (state==='win'){
+    render(); drawEnd('YOU WIN!', '塔の頂きに到達した！', '#ffd23f');
+    if (pressed('r')) state='title';
+  }
+  for (const k in justPressed) justPressed[k]=false;
+  requestAnimationFrame(loop);
+}
+
+state='title';
+loop();
+
+})();
+</script>
+</body>
+</html>

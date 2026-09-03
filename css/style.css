@@ -56,6 +56,9 @@ main {
   padding: 1.5rem;
   text-align: center;
   transition: transform 0.15s ease;
+  display: block;
+  text-decoration: none;
+  color: inherit;
 }
 
 .game-card:hover {
