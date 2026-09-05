@@ -2,20 +2,22 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ザ・タワー ～迷宮の塔～</title>
 <style>
   * { box-sizing:border-box; margin:0; padding:0; }
   html,body {
-    height:100%;
+    min-height:100%;
     background:#111;
     color:#fff;
     font-family: "Courier New", monospace;
     display:flex; flex-direction:column;
-    align-items:center; justify-content:center;
+    align-items:center; justify-content:flex-start;
     gap:12px;
+    padding: 14px 0 24px;
     -webkit-font-smoothing:none;
     user-select:none;
+    overscroll-behavior:none;
   }
   h1 { font-size:18px; letter-spacing:2px; color:#ffd23f; text-shadow:2px 2px #a00; }
   #wrap { position:relative; }
@@ -25,9 +27,50 @@
     image-rendering:crisp-edges;
     border:4px solid #555;
     box-shadow:0 0 0 4px #222, 0 8px 30px rgba(0,0,0,.6);
+    max-width:94vw;
+    height:auto;
   }
   #hint { font-size:12px; color:#8fb; opacity:.8; text-align:center; }
   .keycap { display:inline-block; background:#333; border:1px solid #666; border-radius:3px; padding:1px 6px; margin:0 2px; }
+
+  #touchControls { display:none; }
+  @media (pointer:coarse), (max-width:700px) {
+    #hint { display:none; }
+    #touchControls {
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-end;
+      width:94vw;
+      max-width:448px;
+      touch-action:none;
+    }
+    .dpad { position:relative; width:132px; height:132px; }
+    .dpad button {
+      position:absolute;
+      width:44px; height:44px;
+      background:#333; border:2px solid #666; border-radius:8px;
+      color:#fff; font-size:18px;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .dpad button:active { background:#555; }
+    .dpad .up    { left:44px; top:0; }
+    .dpad .down  { left:44px; top:88px; }
+    .dpad .left  { left:0;    top:44px; }
+    .dpad .right { left:88px; top:44px; }
+    .actions { display:flex; flex-direction:column; gap:12px; align-items:center; }
+    .actions button {
+      width:64px; height:64px;
+      border-radius:50%;
+      background:#7a1e1e; border:2px solid #c04a2b;
+      color:#fff; font-size:13px;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .actions button:active { background:#a02a2a; }
+    .actions .start {
+      background:#2a3f8f; border-color:#6d8bff;
+      width:56px; height:56px; border-radius:12px; font-size:11px;
+    }
+  }
 </style>
 </head>
 <body>
@@ -41,6 +84,19 @@
     止まると盾（正面の飛び道具をガード） ／
     <span class="keycap">Z</span>/<span class="keycap">Enter</span> 決定 ／
     <span class="keycap">R</span> リスタート
+  </div>
+
+  <div id="touchControls">
+    <div class="dpad">
+      <button class="up" data-key="arrowup">▲</button>
+      <button class="down" data-key="arrowdown">▼</button>
+      <button class="left" data-key="arrowleft">◀</button>
+      <button class="right" data-key="arrowright">▶</button>
+    </div>
+    <div class="actions">
+      <button class="start" data-key="start">決定/R</button>
+      <button data-key=" ">剣</button>
+    </div>
   </div>
 
 <script>
@@ -85,6 +141,23 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 function pressed(k){ return justPressed[k]; }
+
+// スマホ用オンスクリーンボタン
+document.querySelectorAll('#touchControls button').forEach(btn => {
+  const k = btn.dataset.key;
+  const setKey = (name, down) => {
+    if (down){ if (!keys[name]) justPressed[name] = true; keys[name] = true; }
+    else keys[name] = false;
+  };
+  const press = e => { e.preventDefault(); if (k==='start'){ setKey('z',true); setKey('r',true); } else setKey(k,true); };
+  const release = e => { e.preventDefault(); if (k==='start'){ setKey('z',false); setKey('r',false); } else setKey(k,false); };
+  btn.addEventListener('touchstart', press, {passive:false});
+  btn.addEventListener('touchend', release, {passive:false});
+  btn.addEventListener('touchcancel', release, {passive:false});
+  btn.addEventListener('mousedown', press);
+  btn.addEventListener('mouseup', release);
+  btn.addEventListener('mouseleave', release);
+});
 
 const DIRV = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
 
