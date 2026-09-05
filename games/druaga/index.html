@@ -170,7 +170,7 @@ function makeDragon(x,y,f){
   return {
     type:'dragon', x, y, px:x*TILE, py:y*TILE, dir:'left',
     speed:0.195, hp:9 + (f-BOSS_FLOOR)*3, maxhp:9 + (f-BOSS_FLOOR)*3,
-    stepCd:0, shootCd:100, ranged:true, alive:true, w:2, hitFlash:0
+    stepCd:0, shootCd:200, ranged:true, alive:true, w:2, hitFlash:0
   };
 }
 
@@ -426,7 +426,7 @@ function updateEnemies(){
       e.shootCd--;
       if (e.shootCd<=0){
         if (e.type==='dragon'){
-          e.shootCd=85;
+          e.shootCd=170;
           fireDragonBreath(e);
         } else {
           const dist=Math.abs(e.x-player.x)+Math.abs(e.y-player.y);
