@@ -3,12 +3,12 @@
 
   const TILE = 40;
   const COLS = 12;
-  const ROWS = 12;
+  const VISIBLE_ROWS = 12;
 
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
   canvas.width = COLS * TILE;
-  canvas.height = ROWS * TILE;
+  canvas.height = VISIBLE_ROWS * TILE;
 
   const scoreEl = document.getElementById("score");
   const levelEl = document.getElementById("level");
@@ -31,6 +31,8 @@
   const INVULN_TIME = 1.6;
   const COMBO_WINDOW = 3;
 
+  let ROWS = 24; // total height of the current mountain (grows every level)
+
   /** @type {boolean[][]} */
   let grid = [];
   let unbreakable = [];
@@ -51,6 +53,7 @@
   let invuln = 0;
   let hammerTimer = 0;
   let hammerCooldown = 0;
+  let scrollY = 0; // world-space pixel y of the top of the viewport; only ever decreases
 
   let state = "ready"; // ready | playing | over
   let lastTs = 0;
@@ -134,6 +137,8 @@
   }
 
   function buildLevel(lv) {
+    ROWS = Math.min(24 + (lv - 1) * 5, 64);
+
     grid = [];
     unbreakable = [];
     for (let r = 0; r < ROWS; r++) {
@@ -141,18 +146,18 @@
       unbreakable.push(new Array(COLS).fill(false));
     }
 
-    // top goal platform (row 0) - solid, unbreakable
+    // summit platform (row 0) - solid, unbreakable: the goal
     for (let c = 0; c < COLS; c++) {
       grid[0][c] = true;
       unbreakable[0][c] = true;
     }
-    // ground floor (last row) - solid, unbreakable
+    // base camp (last row) - solid, unbreakable: where the climb starts
     for (let c = 0; c < COLS; c++) {
       grid[ROWS - 1][c] = true;
       unbreakable[ROWS - 1][c] = true;
     }
 
-    // middle rows: breakable ice platforms with a few gaps
+    // every row in between: breakable ice ledges with a few gaps to climb through
     for (let r = 1; r < ROWS - 1; r++) {
       const gapCount = randInt(2, 4);
       const gapCols = new Set();
@@ -164,9 +169,9 @@
       }
     }
 
-    // enemies
+    // Topi enemies scattered up the whole mountain
     enemies = [];
-    const enemyCount = Math.min(2 + Math.floor(lv * 1.2), 9);
+    const enemyCount = Math.min(4 + Math.floor(ROWS / 3) + lv, 34);
     const rowsAvailable = [];
     for (let r = 1; r < ROWS - 1; r++) rowsAvailable.push(r);
 
@@ -189,21 +194,44 @@
         onGround: false,
         stunned: 0,
         fast,
-        wobble: Math.random() * 10,
       });
     }
 
     condor = null;
     particles = [];
     popups = [];
-    levelTimeMax = Math.max(22, 45 - (lv - 1) * 2);
+    levelTimeMax = Math.max(30, Math.round(ROWS * 1.7) - lv);
     levelTime = levelTimeMax;
   }
 
-  function spawnPlayer() {
+  // resetCamera: true for the very start of a climb (spawn at the mountain's
+  // base and show the bottom of the screen). false for a mid-climb respawn
+  // after death, which drops the player back to the bottom of the CURRENT
+  // view only - the camera never scrolls back down, so a died-and-restarted
+  // climber can't fall further than what's already on screen.
+  function spawnPlayer(resetCamera) {
+    let row, col;
+    if (resetCamera) {
+      scrollY = Math.max(0, (ROWS - VISIBLE_ROWS) * TILE);
+      row = ROWS - 1;
+      col = Math.floor(COLS / 2);
+    } else {
+      const bottomRow = Math.min(ROWS - 1, Math.floor((scrollY + canvas.height) / TILE) - 1);
+      row = bottomRow;
+      col = Math.floor(COLS / 2);
+      search: for (let r = bottomRow; r >= Math.max(0, bottomRow - 10); r--) {
+        for (let c = 0; c < COLS; c++) {
+          if (grid[r][c]) {
+            row = r;
+            col = c;
+            break search;
+          }
+        }
+      }
+    }
     player = {
-      x: Math.floor(COLS / 2) * TILE + 6,
-      y: (ROWS - 1) * TILE - PLAYER_H,
+      x: col * TILE + 6,
+      y: row * TILE - PLAYER_H,
       w: PLAYER_W,
       h: PLAYER_H,
       vx: 0,
@@ -220,7 +248,7 @@
     combo = 0;
     comboTimer = 0;
     buildLevel(level);
-    spawnPlayer();
+    spawnPlayer(true);
     state = "playing";
     overlay.hidden = true;
     updateHud();
@@ -230,11 +258,11 @@
     level++;
     score += 500 + level * 50;
     buildLevel(level);
-    spawnPlayer();
+    spawnPlayer(true);
     updateHud();
   }
 
-  function loseLife(reason) {
+  function loseLife() {
     lives--;
     combo = 0;
     updateHud();
@@ -242,7 +270,7 @@
       gameOver();
       return;
     }
-    spawnPlayer();
+    spawnPlayer(false);
   }
 
   function gameOver() {
@@ -371,7 +399,7 @@
   function spawnCondor() {
     condor = {
       x: player.x < canvas.width / 2 ? canvas.width - 40 : 0,
-      y: TILE * 2,
+      y: scrollY + TILE * 1.5,
       w: 32,
       h: 26,
     };
@@ -416,7 +444,6 @@
       const en = enemies[i];
       if (!aabbOverlap(player, en)) continue;
       if (en.stunned > 0) {
-        // defeat
         combo = comboTimer > 0 ? Math.min(combo + 1, 4) : 0;
         comboTimer = COMBO_WINDOW;
         const pts = 100 * Math.pow(2, combo);
@@ -432,6 +459,15 @@
     if (condor && aabbOverlap(player, condor)) {
       loseLife();
     }
+  }
+
+  function updateCamera() {
+    // Keep the player roughly 40% down the screen while climbing. The
+    // camera only ever moves up (scrollY only ever decreases) - just like
+    // the original, once you've scrolled past a section it's gone, so
+    // falling back down past the bottom edge of the view is fatal.
+    const desired = player.y - VISIBLE_ROWS * TILE * 0.42;
+    scrollY = Math.min(scrollY, Math.max(0, desired));
   }
 
   function update(dt) {
@@ -461,8 +497,16 @@
     moveX(player, player.vx * dt);
     moveY(player, player.vy * dt);
 
+    updateCamera();
     updateEnemies(dt);
     checkPlayerHits();
+
+    // fell below the bottom edge of the current view - the screen already
+    // scrolled past this point, so there's no climbing back up to it
+    if (player.y > scrollY + canvas.height) {
+      loseLife();
+      if (state !== "playing") return;
+    }
 
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
@@ -479,7 +523,7 @@
       if (p.life <= 0) popups.splice(i, 1);
     }
 
-    // reached the goal (top platform)
+    // reached the summit
     if (player.y <= TILE + 2 && player.onGround) {
       nextLevel();
       popups.push({ x: player.x, y: player.y - 20, text: "CLEAR!", color: "#4ade80", life: 1.2 });
@@ -500,19 +544,23 @@
     ctx.fillStyle = "#0b1220";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "rgba(148,163,184,0.06)";
+    // parallax-ish starfield tied to scroll so climbing actually feels like motion
     for (let i = 0; i < 40; i++) {
       const x = (i * 53) % canvas.width;
-      const y = (i * 97) % canvas.height;
-      ctx.fillRect(x, y, 2, 2);
+      const y = ((i * 97) - scrollY * 0.25) % canvas.height;
+      const wrapped = y < 0 ? y + canvas.height : y;
+      ctx.fillRect(x, wrapped, 2, 2);
     }
   }
 
   function drawGrid() {
-    for (let r = 0; r < ROWS; r++) {
+    const firstRow = Math.max(0, Math.floor(scrollY / TILE) - 1);
+    const lastRow = Math.min(ROWS - 1, Math.ceil((scrollY + canvas.height) / TILE) + 1);
+    for (let r = firstRow; r <= lastRow; r++) {
       for (let c = 0; c < COLS; c++) {
         if (!grid[r][c]) continue;
         const x = c * TILE;
-        const y = r * TILE;
+        const y = r * TILE - scrollY;
         ctx.fillStyle = unbreakable[r][c] ? "#475569" : "#5eead4";
         ctx.fillRect(x, y, TILE, TILE);
         ctx.strokeStyle = "rgba(15,23,42,0.35)";
@@ -529,7 +577,7 @@
   function drawPlayer() {
     if (invuln > 0 && Math.floor(invuln * 12) % 2 === 0) return;
     const x = player.x;
-    const y = player.y;
+    const y = player.y - scrollY;
     ctx.fillStyle = "#f97316";
     ctx.fillRect(x, y + 10, player.w, player.h - 10);
     ctx.fillStyle = "#fde68a";
@@ -551,25 +599,28 @@
 
   function drawEnemies() {
     for (const en of enemies) {
+      const sy = en.y - scrollY;
+      if (sy < -TILE || sy > canvas.height + TILE) continue;
       ctx.fillStyle = en.stunned > 0 ? "#facc15" : en.fast ? "#c084fc" : "#e2e8f0";
       ctx.beginPath();
-      ctx.ellipse(en.x + en.w / 2, en.y + en.h / 2, en.w / 2, en.h / 2, 0, 0, Math.PI * 2);
+      ctx.ellipse(en.x + en.w / 2, sy + en.h / 2, en.w / 2, en.h / 2, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#1e293b";
       const dir = en.vx >= 0 ? 1 : -1;
-      ctx.fillRect(en.x + en.w / 2 + dir * 5 - 2, en.y + en.h / 2 - 4, 3, 3);
+      ctx.fillRect(en.x + en.w / 2 + dir * 5 - 2, sy + en.h / 2 - 4, 3, 3);
       if (en.stunned > 0) {
         ctx.fillStyle = "#1e293b";
         ctx.font = "10px sans-serif";
-        ctx.fillText("☆", en.x + 4, en.y - 4);
+        ctx.fillText("☆", en.x + 4, sy - 4);
       }
     }
     if (condor) {
+      const sy = condor.y - scrollY;
       ctx.fillStyle = "#f87171";
       ctx.beginPath();
-      ctx.moveTo(condor.x, condor.y + condor.h / 2);
-      ctx.lineTo(condor.x + condor.w, condor.y);
-      ctx.lineTo(condor.x + condor.w, condor.y + condor.h);
+      ctx.moveTo(condor.x, sy + condor.h / 2);
+      ctx.lineTo(condor.x + condor.w, sy);
+      ctx.lineTo(condor.x + condor.w, sy + condor.h);
       ctx.closePath();
       ctx.fill();
     }
@@ -579,14 +630,14 @@
     for (const p of particles) {
       ctx.fillStyle = p.color;
       ctx.globalAlpha = Math.max(0, p.life / 0.5);
-      ctx.fillRect(p.x, p.y, 4, 4);
+      ctx.fillRect(p.x, p.y - scrollY, 4, 4);
       ctx.globalAlpha = 1;
     }
     for (const p of popups) {
       ctx.fillStyle = p.color;
       ctx.globalAlpha = Math.max(0, p.life / 0.8);
       ctx.font = "bold 13px sans-serif";
-      ctx.fillText(p.text, p.x, p.y);
+      ctx.fillText(p.text, p.x, p.y - scrollY);
       ctx.globalAlpha = 1;
     }
   }
@@ -615,7 +666,7 @@
 
   bindInput();
   buildLevel(1);
-  spawnPlayer();
+  spawnPlayer(true);
   draw();
   requestAnimationFrame(loop);
 })();
