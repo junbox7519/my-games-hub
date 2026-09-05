@@ -378,12 +378,12 @@ function atRest(o){ return o.px===o.x*TILE && o.py===o.y*TILE; }
 function spawnProjectile(fromPx, fromPy, targetPx, targetPy, kind){
   const dx=targetPx-fromPx, dy=targetPy-fromPy;
   const len=Math.hypot(dx,dy)||1;
-  const spd = kind==='arrow'?1.02:(kind==='fire'?1.08:0.66);
+  const spd = kind==='arrow'?1.02:(kind==='fire'?0.432:0.66);
   projectiles.push({
     px:fromPx, py:fromPy,
     vx:dx/len*spd, vy:dy/len*spd,
     kind, dmg: kind==='arrow'?15:(kind==='fire'?24:22),
-    life: kind==='fire'?800:600   // 炎は遠くまで飛ぶ
+    life: kind==='fire'?2000:600   // 炎は遠くまで飛ぶ
   });
 }
 
