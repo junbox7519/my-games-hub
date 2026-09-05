@@ -239,11 +239,24 @@ function makeEnemy(type,x,y,f){
   };
 }
 
+// ドラゴンの色違い(階層ごとの強化版)
+const DRAGON_VARIANTS = {
+  red:   { name:'DRAGON',       hp:9,  speedMul:1,    shootInit:200, shootLoop:170, breath:3,
+           pal:{B:'#5a3a2a', W:'#77c069', w:'#a7dd97', G:'#3aa33f', g:'#2b8030', Y:'#f5d020', O:'#ef9a2e', o:'#f8c661', K:'#20140e'} },
+  white: { name:'WHITE DRAGON', hp:16, speedMul:1.2,  shootInit:170, shootLoop:145, breath:4,
+           pal:{B:'#8a8a9a', W:'#f5f5fa', w:'#ffffff', G:'#e8eef5', g:'#c3ccdc', Y:'#ff5050', O:'#bcd6ee', o:'#e2f0fb', K:'#20202a'} },
+  gold:  { name:'GOLD DRAGON',  hp:30, speedMul:1.45, shootInit:130, shootLoop:110, breath:5,
+           pal:{B:'#7a4a10', W:'#ffe27a', w:'#fff3c0', G:'#f0c040', g:'#c99a20', Y:'#fff200', O:'#e2451f', o:'#ff8a3d', K:'#241a06'} }
+};
+function dragonVariantKey(f){ return f>=8 ? 'gold' : (f>=7 ? 'white' : 'red'); }
+
 function makeDragon(x,y,f){
+  const key = dragonVariantKey(f);
+  const v = DRAGON_VARIANTS[key];
   return {
-    type:'dragon', x, y, px:x*TILE, py:y*TILE, dir:'left',
-    speed:0.195, hp:9 + (f-BOSS_FLOOR)*3, maxhp:9 + (f-BOSS_FLOOR)*3,
-    stepCd:0, shootCd:200, ranged:true, alive:true, w:2, hitFlash:0
+    type:'dragon', variant:key, x, y, px:x*TILE, py:y*TILE, dir:'left',
+    speed:0.195*v.speedMul, hp:v.hp, maxhp:v.hp,
+    stepCd:0, shootCd:v.shootInit, ranged:true, alive:true, w:2, hitFlash:0
   };
 }
 
@@ -291,7 +304,7 @@ function startFloor(f){
     spawnTraps(f, cells);
   }
 
-  msg = isBoss ? "DRAGON'S LAIR" : "FLOOR "+f;
+  msg = isBoss ? DRAGON_VARIANTS[dragonVariantKey(f)].name+(f>=8?" - FINAL BATTLE!":f>=7?" APPEARS!":"'S LAIR") : "FLOOR "+f;
   msgTimer = 100;
 }
 
@@ -499,7 +512,7 @@ function updateEnemies(){
       e.shootCd--;
       if (e.shootCd<=0){
         if (e.type==='dragon'){
-          e.shootCd=170;
+          e.shootCd=DRAGON_VARIANTS[e.variant].shootLoop;
           fireDragonBreath(e);
         } else {
           const dist=Math.abs(e.x-player.x)+Math.abs(e.y-player.y);
@@ -569,8 +582,10 @@ function fireDragonBreath(e){
   const cx=e.px+32, cy=e.py+32; // 2x2の中心
   const pcx=player.px+16, pcy=player.py+16;
   const base=Math.atan2(pcy-cy, pcx-cx);
-  for (let a=-1;a<=1;a++){
-    const ang=base + a*0.35;
+  const n = DRAGON_VARIANTS[e.variant].breath;
+  for (let i=0;i<n;i++){
+    const off = i-(n-1)/2;
+    const ang = base + off*0.35;
     spawnProjectile(cx,cy, cx+Math.cos(ang)*40, cy+Math.sin(ang)*40, 'fire');
   }
 }
@@ -927,8 +942,7 @@ function drawDragon(e, flash){
   const wob=Math.round(Math.sin(Date.now()/220)*2);
   const ps=2, ox=px, oy=py+14+wob; // 32x16グリッドを縦中央寄せ
   const pr=(gx,gy,gw,gh,col)=>{ ctx.fillStyle=col; ctx.fillRect(ox+gx*ps, oy+gy*ps, gw*ps, gh*ps); };
-  const B='#5a3a2a', W='#77c069', w='#a7dd97', G='#3aa33f', g='#2b8030',
-        Y='#f5d020', O='#ef9a2e', o='#f8c661', K='#20140e';
+  const {B,W,w,G,g,Y,O,o,K} = DRAGON_VARIANTS[e.variant].pal;
 
   // ---- 翼(左右対称に大きく広げる) ----
   const spans=[[1,1,4],[2,1,7],[3,1,9],[4,2,11],[5,4,11],[6,6,11],[7,8,11]];
@@ -1012,10 +1026,12 @@ function drawHUD(){
   }
   // ボスHP
   if (isBoss && boss && boss.alive){
-    ctx.fillStyle=C.text; ctx.fillText('DRAGON', 250, cv.height-15);
-    ctx.fillStyle='#333'; ctx.fillRect(310, cv.height-14, 130, 8);
+    ctx.font='10px "Courier New"';
+    ctx.fillStyle=C.text; ctx.fillText(DRAGON_VARIANTS[boss.variant].name, 238, cv.height-14);
+    ctx.font='12px "Courier New"';
+    ctx.fillStyle='#333'; ctx.fillRect(318, cv.height-14, 122, 8);
     ctx.fillStyle='#ff7b25';
-    ctx.fillRect(310, cv.height-14, 130*Math.max(0,boss.hp)/boss.maxhp, 8);
+    ctx.fillRect(318, cv.height-14, 122*Math.max(0,boss.hp)/boss.maxhp, 8);
   }
 }
 function drawMessage(){
